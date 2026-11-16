@@ -1,0 +1,1468 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+  UtensilsCrossed,
+  Printer,
+  History,
+  CheckCircle2,
+  Clock,
+  Plus,
+  Minus,
+  Search,
+  Users,
+  ChevronLeft,
+  Smartphone,
+  CreditCard,
+  Banknote,
+  RefreshCw,
+  ShoppingBag,
+  Flame,
+  Coffee,
+  X,
+  FileText,
+  Download,
+  AlertCircle,
+  Sparkles,
+  Send,
+  UserCheck
+} from 'lucide-react';
+import { api } from '../api';
+import KrishLogo from '../components/KrishLogo';
+
+const RESTAURANT_ID = 'db4ed920-3d20-420a-9f54-99d3c0b48a08';
+
+// Emoji Category Icons
+const CATEGORY_ICONS = {
+  'briyani': '🍲',
+  'fried rice': '🍚',
+  'noodles': '🥢',
+  'parotta': '🫓',
+  'porotta': '🫓',
+  'mojito': '🍹',
+  'ice cream': '🍨',
+  'coffee & milk': '☕',
+  'juice': '🧃',
+  'fried chicken': '🍗',
+  'french fries': '🍟',
+  'sandwich': '🥪',
+  'snacks': '🍿',
+  'bun': '🥯',
+  'maggi': '🍜',
+  'bread omblate': '🍳',
+  'others': '🥘',
+  'omblate': '🥚'
+};
+
+const getCategoryPriority = (category = '') => {
+  const norm = String(category).trim().toLowerCase();
+  if (norm === 'briyani' || norm === 'biryani') return 1;
+  if (norm === 'fried rice' || norm === 'rice') return 2;
+  if (norm === 'noodles' || norm === 'noodle') return 3;
+  if (norm === 'parotta' || norm === 'porotta') return 4;
+  return 10;
+};
+
+export default function WaiterPosPage() {
+  const navigate = useNavigate();
+
+  // Mode: 'TABLES' | 'ORDERING' | 'BILLING' | 'HISTORY'
+  const [activeTab, setActiveTab] = useState('TABLES');
+
+  // Server selection
+  const [serverName, setServerName] = useState(() => localStorage.getItem('krish_server_name') || 'Captain');
+  const [isEditingServer, setIsEditingServer] = useState(false);
+  const [tempServerName, setTempServerName] = useState(serverName);
+
+  // Table grid status
+  const [tablesData, setTablesData] = useState({ totalTables: 16, vacantCount: 16, occupiedCount: 0, tables: [] });
+  const [isLoadingTables, setIsLoadingTables] = useState(true);
+
+  // Selected table for ordering
+  const [selectedTable, setSelectedTable] = useState(null); // { tableNumber, tableLabel, ... }
+  const [activeTableOrder, setActiveTableOrder] = useState(null);
+
+  // Menu items & categories
+  const [menuItems, setMenuItems] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [activeCategory, setActiveCategory] = useState('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Active Order Cart for current table
+  // Array of { menuItemId, name, price, quantity, customerSeat (1-4 or 0), customerLabel }
+  const [cartItems, setCartItems] = useState([]);
+  const [selectedSeat, setSelectedSeat] = useState(1); // 1, 2, 3, 4, or 0 (Shared)
+  const [orderNotes, setOrderNotes] = useState('');
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+
+  // Settlement & Thermal Print Modal
+  const [settleModalOrder, setSettleModalOrder] = useState(null);
+  const [settlingMethod, setSettlingMethod] = useState('CASH');
+  const [isSettling, setIsSettling] = useState(false);
+  const [printedReceipt, setPrintedReceipt] = useState(null);
+
+  // Bill History & Search Archive
+  const [billsArchive, setBillsArchive] = useState([]);
+  const [billsDateFilter, setBillsDateFilter] = useState('today');
+  const [billsSearch, setBillsSearch] = useState('');
+  const [billsTableFilter, setBillsTableFilter] = useState('');
+  const [isLoadingBills, setIsLoadingBills] = useState(false);
+  const [viewBillModal, setViewBillModal] = useState(null);
+
+  // Fetch Tables
+  const loadTableStatus = async () => {
+    try {
+      const data = await api.getPosTableStatus(RESTAURANT_ID);
+      setTablesData(data);
+    } catch (err) {
+      console.error('Error fetching tables status:', err);
+    } finally {
+      setIsLoadingTables(false);
+    }
+  };
+
+  // Fetch Menu
+  const loadMenu = async () => {
+    try {
+      const data = await api.getMenu(RESTAURANT_ID);
+      const items = Array.isArray(data) ? data : (data?.items || []);
+      setMenuItems(items);
+
+      const cats = Array.from(new Set(items.map((it) => it.category).filter(Boolean))).sort((a, b) => {
+        const pA = getCategoryPriority(a);
+        const pB = getCategoryPriority(b);
+        if (pA !== pB) return pA - pB;
+        return a.localeCompare(b);
+      });
+      setCategories(cats);
+    } catch (err) {
+      console.error('Error fetching menu:', err);
+    }
+  };
+
+  // Fetch Bills Archive
+  const loadBillsArchive = async () => {
+    setIsLoadingBills(true);
+    try {
+      const res = await api.getArchivedBills({
+        restaurantId: RESTAURANT_ID,
+        date: billsDateFilter,
+        table: billsTableFilter,
+        search: billsSearch,
+        limit: 50
+      });
+      setBillsArchive(res.bills || []);
+    } catch (err) {
+      console.error('Error loading bills archive:', err);
+    } finally {
+      setIsLoadingBills(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTableStatus();
+    loadMenu();
+    const interval = setInterval(loadTableStatus, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'HISTORY') {
+      loadBillsArchive();
+    }
+  }, [activeTab, billsDateFilter, billsTableFilter, billsSearch]);
+
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(''), 3500);
+  };
+
+  const handleSaveServerName = (e) => {
+    e.preventDefault();
+    if (tempServerName.trim()) {
+      setServerName(tempServerName.trim());
+      localStorage.setItem('krish_server_name', tempServerName.trim());
+      setIsEditingServer(false);
+      showToast(`Server set to: ${tempServerName.trim()}`);
+    }
+  };
+
+  // Open Table for Ordering
+  const handleSelectTable = async (table) => {
+    setSelectedTable(table);
+    setSelectedSeat(1);
+    setCartItems([]);
+    setOrderNotes('');
+    setActiveTab('ORDERING');
+
+    // Check if table already has an active order
+    try {
+      const ord = await api.getActivePosTableOrder(table.tableNumber, RESTAURANT_ID);
+      if (ord.hasActiveOrder) {
+        setActiveTableOrder(ord);
+      } else {
+        setActiveTableOrder(null);
+      }
+    } catch (err) {
+      console.error('Error loading active table order:', err);
+      setActiveTableOrder(null);
+    }
+  };
+
+  // Add Item to Cart for specific Customer Seat (1-4 or 0 for Shared)
+  const handleAddItemToSeat = (dish, seatNum) => {
+    const seatLabel = seatNum === 0 ? 'Table Shared' : `Customer ${seatNum}`;
+    setCartItems((prev) => {
+      const existingIdx = prev.findIndex(
+        (it) => it.menuItemId === dish.id && it.customerSeat === seatNum
+      );
+      if (existingIdx >= 0) {
+        const next = [...prev];
+        next[existingIdx] = { ...next[existingIdx], quantity: next[existingIdx].quantity + 1 };
+        return next;
+      } else {
+        return [
+          ...prev,
+          {
+            menuItemId: dish.id,
+            name: dish.name,
+            category: dish.category,
+            price: Number(dish.price),
+            quantity: 1,
+            customerSeat: seatNum,
+            customerLabel: seatLabel,
+            isVeg: Boolean(dish.is_veg)
+          }
+        ];
+      }
+    });
+  };
+
+  // Remove or decrease quantity for item in specific seat
+  const handleRemoveItemFromSeat = (dishId, seatNum) => {
+    setCartItems((prev) => {
+      const existingIdx = prev.findIndex(
+        (it) => it.menuItemId === dishId && it.customerSeat === seatNum
+      );
+      if (existingIdx === -1) return prev;
+      const current = prev[existingIdx];
+      if (current.quantity > 1) {
+        const next = [...prev];
+        next[existingIdx] = { ...current, quantity: current.quantity - 1 };
+        return next;
+      } else {
+        return prev.filter((_, idx) => idx !== existingIdx);
+      }
+    });
+  };
+
+  // Get total quantity of dish across all seats in active cart
+  const getItemQuantityForSeat = (dishId, seatNum) => {
+    const match = cartItems.find((it) => it.menuItemId === dishId && it.customerSeat === seatNum);
+    return match ? match.quantity : 0;
+  };
+
+  // Filtered menu items
+  const filteredDishes = useMemo(() => {
+    return menuItems
+      .filter((dish) => {
+        const matchesCategory = activeCategory === 'ALL' || dish.category?.toLowerCase() === activeCategory.toLowerCase();
+        const matchesSearch =
+          !searchQuery.trim() ||
+          dish.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          dish.category?.toLowerCase().includes(searchQuery.toLowerCase());
+        return matchesCategory && matchesSearch;
+      })
+      .sort((a, b) => {
+        if (activeCategory === 'ALL') {
+          const pA = getCategoryPriority(a.category);
+          const pB = getCategoryPriority(b.category);
+          if (pA !== pB) return pA - pB;
+          const catComp = (a.category || '').localeCompare(b.category || '');
+          if (catComp !== 0) return catComp;
+        }
+        return (a.name || '').localeCompare(b.name || '');
+      });
+  }, [menuItems, activeCategory, searchQuery]);
+
+  // Cart Totals
+  const cartTotals = useMemo(() => {
+    const subtotal = cartItems.reduce((sum, it) => sum + it.price * it.quantity, 0);
+    const totalCount = cartItems.reduce((sum, it) => sum + it.quantity, 0);
+
+    // Seat groupings
+    const seatBreakdown = {
+      1: { seat: 1, label: 'Customer 1', items: [], subtotal: 0 },
+      2: { seat: 2, label: 'Customer 2', items: [], subtotal: 0 },
+      3: { seat: 3, label: 'Customer 3', items: [], subtotal: 0 },
+      4: { seat: 4, label: 'Customer 4', items: [], subtotal: 0 },
+      0: { seat: 0, label: 'Table Shared', items: [], subtotal: 0 },
+    };
+
+    cartItems.forEach((it) => {
+      const s = seatBreakdown[it.customerSeat] || seatBreakdown[1];
+      s.items.push(it);
+      s.subtotal += it.price * it.quantity;
+    });
+
+    return {
+      subtotal,
+      totalCount,
+      seats: Object.values(seatBreakdown).filter((s) => s.items.length > 0)
+    };
+  }, [cartItems]);
+
+  // Dispatch Order to Kitchen & Billing
+  const handleDispatchOrder = async () => {
+    if (!selectedTable || cartItems.length === 0) return;
+
+    setIsSubmittingOrder(true);
+    try {
+      const payload = {
+        restaurantId: RESTAURANT_ID,
+        tableNumber: selectedTable.tableNumber,
+        tableId: selectedTable.tableId,
+        serverName,
+        guestCount: Math.max(1, ...cartItems.map((it) => it.customerSeat).filter((s) => s > 0)),
+        notes: orderNotes,
+        items: cartItems.map((it) => ({
+          menuItemId: it.menuItemId,
+          quantity: it.quantity,
+          customerSeat: it.customerSeat,
+          customerLabel: it.customerLabel,
+        }))
+      };
+
+      const res = await api.createPosOrder(payload);
+      showToast(`✅ ${selectedTable.tableLabel} order dispatched to kitchen & billing! Total: ₹${res.total}`);
+      setCartItems([]);
+      setOrderNotes('');
+      await loadTableStatus();
+      setActiveTab('TABLES');
+    } catch (err) {
+      alert('Failed to place order: ' + err.message);
+    } finally {
+      setIsSubmittingOrder(false);
+    }
+  };
+
+  // Settle Order in Billing Area
+  const handleOpenSettleModal = async (table) => {
+    try {
+      const ord = await api.getActivePosTableOrder(table.tableNumber, RESTAURANT_ID);
+      if (ord.hasActiveOrder) {
+        setSettleModalOrder(ord);
+        setSettlingMethod('CASH');
+      } else {
+        alert('No active order on ' + table.tableLabel);
+      }
+    } catch (err) {
+      alert('Error fetching active order: ' + err.message);
+    }
+  };
+
+  const handleConfirmSettle = async () => {
+    if (!settleModalOrder) return;
+    setIsSettling(true);
+    try {
+      const res = await api.settlePosOrder(settleModalOrder.orderId, {
+        paymentMethod: settlingMethod,
+        cashierName: serverName
+      });
+
+      setPrintedReceipt(res);
+      showToast(`Bill ${res.billNumber} settled successfully via ${settlingMethod}!`);
+      await loadTableStatus();
+    } catch (err) {
+      alert('Failed to settle bill: ' + err.message);
+    } finally {
+      setIsSettling(false);
+    }
+  };
+
+  // Thermal Print Trigger
+  const handleTriggerBrowserPrint = () => {
+    window.print();
+  };
+
+  return (
+    <div className="min-h-screen bg-[#0E0C0A] text-stone-100 flex flex-col font-sans selection:bg-amber-500 selection:text-black">
+      
+      {/* Toast Alert */}
+      {toastMessage && (
+        <div className="fixed top-4 inset-x-0 z-50 flex justify-center px-4 pointer-events-none">
+          <div className="pointer-events-auto bg-amber-500 text-stone-950 font-black text-xs px-5 py-2.5 rounded-full shadow-[0_8px_30px_rgba(245,158,11,0.5)] flex items-center gap-2 animate-bounce">
+            <Sparkles className="w-4 h-4" />
+            <span>{toastMessage}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Top POS Header Navigation */}
+      <header className="sticky top-0 z-40 bg-[#161310]/95 backdrop-blur-md border-b border-white/10 px-4 py-3 shadow-md">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+          
+          {/* Brand & Server Tag */}
+          <div className="flex items-center justify-between w-full sm:w-auto gap-4">
+            <div className="flex items-center gap-3 cursor-pointer" onClick={() => setActiveTab('TABLES')}>
+              <KrishLogo className="w-9 h-9" />
+              <div>
+                <h1 className="font-serif font-black text-base text-amber-400 tracking-wide uppercase leading-tight">
+                  KRISH POS
+                </h1>
+                <p className="text-[10px] text-stone-400 tracking-wider uppercase font-semibold">
+                  Staff Waiter &amp; Billing Terminal
+                </p>
+              </div>
+            </div>
+
+            {/* Server Badge */}
+            <div className="flex items-center gap-2">
+              {isEditingServer ? (
+                <form onSubmit={handleSaveServerName} className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={tempServerName}
+                    onChange={(e) => setTempServerName(e.target.value)}
+                    className="text-xs px-2.5 py-1 bg-stone-900 border border-amber-400 rounded-lg text-white font-bold w-28 outline-none"
+                    autoFocus
+                  />
+                  <button type="submit" className="text-xs bg-amber-500 text-black px-2 py-1 rounded-lg font-bold">
+                    Save
+                  </button>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => { setTempServerName(serverName); setIsEditingServer(true); }}
+                  className="px-3 py-1 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center gap-1.5 hover:bg-amber-500/20 transition cursor-pointer"
+                  title="Click to change server name"
+                >
+                  <UserCheck className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Server: {serverName}</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Navigation Mode Tabs */}
+          <div className="flex items-center gap-1.5 bg-stone-900/90 p-1 rounded-2xl border border-white/10 text-xs font-bold w-full sm:w-auto overflow-x-auto no-scrollbar">
+            <button
+              type="button"
+              onClick={() => setActiveTab('TABLES')}
+              className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                activeTab === 'TABLES' || activeTab === 'ORDERING'
+                  ? 'bg-amber-500 text-stone-950 font-black shadow-sm'
+                  : 'text-stone-400 hover:text-white'
+              }`}
+            >
+              <UtensilsCrossed className="w-3.5 h-3.5" />
+              <span>Floor Tables</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('BILLING')}
+              className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                activeTab === 'BILLING'
+                  ? 'bg-amber-500 text-stone-950 font-black shadow-sm'
+                  : 'text-stone-400 hover:text-white'
+              }`}
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>Billing Counter</span>
+              {tablesData.occupiedCount > 0 && (
+                <span className="w-5 h-5 rounded-full bg-rose-600 text-white text-[10px] flex items-center justify-center font-mono">
+                  {tablesData.occupiedCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('HISTORY')}
+              className={`px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                activeTab === 'HISTORY'
+                  ? 'bg-amber-500 text-stone-950 font-black shadow-sm'
+                  : 'text-stone-400 hover:text-white'
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              <span>Bills &amp; History</span>
+            </button>
+
+            {/* Back to Kitchen / Admin */}
+            <button
+              type="button"
+              onClick={() => navigate('/kitchen')}
+              className="px-3 py-1.5 rounded-xl text-stone-400 hover:text-white transition text-xs whitespace-nowrap"
+            >
+              Kitchen ↗
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/admin')}
+              className="px-3 py-1.5 rounded-xl text-stone-400 hover:text-white transition text-xs whitespace-nowrap"
+            >
+              Admin ↗
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Container */}
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6">
+        
+        {/* ============================================================== */}
+        {/* TAB 1: INTERACTIVE FLOOR TABLE MAP (Stage 6) */}
+        {/* ============================================================== */}
+        {activeTab === 'TABLES' && (
+          <div className="space-y-6">
+            
+            {/* Quick Status Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-stone-900/60 p-4 rounded-3xl border border-white/10">
+              <div>
+                <h2 className="text-lg font-serif font-black text-white flex items-center gap-2">
+                  <span>Dining Floor &amp; Takeaway Tables</span>
+                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-sans font-bold">
+                    {tablesData.totalTables} Service Points
+                  </span>
+                </h2>
+                <p className="text-xs text-stone-400">
+                  Select any table to take an order for Customers 1 to 4 or add dishes to a running tab.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-4 text-xs font-bold">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></span>
+                  <span className="text-stone-300">{tablesData.vacantCount} Vacant</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></span>
+                  <span className="text-stone-300">{tablesData.occupiedCount} Active Dining</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={loadTableStatus}
+                  className="p-2 bg-stone-800 hover:bg-stone-700 rounded-xl transition text-stone-300 cursor-pointer"
+                  title="Refresh Table Status"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isLoadingTables ? 'animate-spin text-amber-400' : ''}`} />
+                </button>
+              </div>
+            </div>
+
+            {/* 16 Tables Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 gap-4">
+              {tablesData.tables.map((t) => {
+                const isOccupied = t.status !== 'VACANT';
+                const isParcel = t.isParcel;
+
+                return (
+                  <div
+                    key={t.tableId}
+                    className={`p-4 rounded-3xl border transition-all flex flex-col justify-between cursor-pointer relative overflow-hidden group ${
+                      isOccupied
+                        ? 'bg-linear-to-b from-blue-950/40 via-stone-900 to-stone-950 border-blue-500/40 hover:border-blue-400 shadow-[0_4px_20px_rgba(37,99,235,0.15)]'
+                        : 'bg-stone-900/80 hover:bg-stone-900 border-white/10 hover:border-amber-400/50 shadow-md'
+                    }`}
+                    onClick={() => handleSelectTable(t)}
+                  >
+                    {/* Card Top */}
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                          isOccupied ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' : 'bg-emerald-500/20 text-emerald-400'
+                        }`}>
+                          {isOccupied ? 'Active Dining' : 'Available'}
+                        </span>
+                        <h3 className="text-xl font-serif font-black text-white mt-1.5">
+                          {t.tableLabel}
+                        </h3>
+                      </div>
+
+                      <div className={`w-9 h-9 rounded-2xl flex items-center justify-center font-bold text-sm ${
+                        isOccupied ? 'bg-blue-500 text-white' : 'bg-stone-800 text-stone-400 group-hover:bg-amber-500 group-hover:text-black transition'
+                      }`}>
+                        {isParcel ? <ShoppingBag className="w-4 h-4" /> : `#${t.tableNumber}`}
+                      </div>
+                    </div>
+
+                    {/* Card Content */}
+                    <div className="my-4">
+                      {isOccupied && t.activeOrder ? (
+                        <div className="space-y-1.5 font-mono text-xs">
+                          <div className="flex items-baseline justify-between text-white font-black text-lg">
+                            <span>₹{t.activeOrder.total.toFixed(2)}</span>
+                            <span className="text-[11px] font-sans font-bold text-stone-400">{t.activeOrder.itemCount} items</span>
+                          </div>
+                          <div className="text-[11px] text-stone-400 flex items-center justify-between font-sans">
+                            <span>By: {t.activeOrder.serverName}</span>
+                            <span className="flex items-center gap-1 text-blue-300">
+                              <Clock className="w-3 h-3" />
+                              {t.activeOrder.elapsedMinutes}m
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-stone-500">
+                          Empty table. Tap to start taking orders.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Card Footer Actions */}
+                    <div className="pt-2 border-t border-white/5 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSelectTable(t);
+                        }}
+                        className={`flex-1 py-2 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                          isOccupied
+                            ? 'bg-stone-800 hover:bg-stone-700 text-white'
+                            : 'bg-amber-500 hover:bg-amber-400 text-stone-950 font-black'
+                        }`}
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>{isOccupied ? 'Add Dishes' : 'Take Order'}</span>
+                      </button>
+
+                      {isOccupied && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenSettleModal(t);
+                          }}
+                          className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold flex items-center gap-1 transition cursor-pointer"
+                          title="Settle & Print Bill"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================== */}
+        {/* TAB 2: WAITER MULTI-SEAT ORDERING TERMINAL (Stage 7) */}
+        {/* ============================================================== */}
+        {activeTab === 'ORDERING' && selectedTable && (
+          <div className="space-y-5 animate-fade-in">
+            
+            {/* Top Bar for Selected Table */}
+            <div className="bg-[#171411] p-4 rounded-3xl border border-white/10 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-lg">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('TABLES')}
+                  className="p-2.5 rounded-2xl bg-stone-800 hover:bg-stone-700 text-white transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>Floor</span>
+                </button>
+                <div>
+                  <h2 className="text-xl font-serif font-black text-amber-400 flex items-center gap-2">
+                    <span>{selectedTable.tableLabel}</span>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-stone-800 text-stone-300 font-sans font-bold">
+                      Server: {serverName}
+                    </span>
+                  </h2>
+                  <p className="text-xs text-stone-400">
+                    Select a customer seat below, then tap dishes to add them directly to that customer's tab.
+                  </p>
+                </div>
+              </div>
+
+              {/* Active Tab Subtotal / Settle Shortcut */}
+              {activeTableOrder && (
+                <div className="flex items-center gap-3 bg-stone-900/80 px-4 py-2 rounded-2xl border border-blue-500/30">
+                  <div>
+                    <span className="text-[10px] text-stone-400 uppercase tracking-wider block font-bold">Current Bill Total</span>
+                    <span className="text-base font-black text-emerald-400 font-mono">₹{activeTableOrder.total.toFixed(2)}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenSettleModal(selectedTable)}
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Print Bill</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* SEAT SELECTOR BUTTONS (Customer 1 to 4 + Shared) */}
+            <div className="bg-[#171411] p-3 rounded-2xl border border-white/10 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-stone-400 hidden sm:inline px-1">Assign to:</span>
+                {[1, 2, 3, 4].map((seatNum) => {
+                  const isSelected = selectedSeat === seatNum;
+                  const seatCount = cartItems
+                    .filter((it) => it.customerSeat === seatNum)
+                    .reduce((sum, it) => sum + it.quantity, 0);
+
+                  return (
+                    <button
+                      type="button"
+                      key={seatNum}
+                      onClick={() => setSelectedSeat(seatNum)}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                        isSelected
+                          ? 'bg-amber-500 text-stone-950 font-black shadow-md scale-102'
+                          : 'bg-stone-800 text-stone-300 hover:text-white border border-white/5'
+                      }`}
+                    >
+                      <Users className="w-3.5 h-3.5" />
+                      <span>Customer {seatNum}</span>
+                      {seatCount > 0 && (
+                        <span className={`w-4 h-4 rounded-full text-[10px] font-mono flex items-center justify-center ${
+                          isSelected ? 'bg-stone-950 text-amber-400' : 'bg-amber-500 text-stone-950'
+                        }`}>
+                          {seatCount}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedSeat(0)}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                    selectedSeat === 0
+                      ? 'bg-amber-500 text-stone-950 font-black shadow-md scale-102'
+                      : 'bg-stone-800 text-stone-300 hover:text-white border border-white/5'
+                  }`}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Table Shared</span>
+                  {cartItems.filter((it) => it.customerSeat === 0).length > 0 && (
+                    <span className="w-4 h-4 rounded-full bg-amber-500 text-stone-950 text-[10px] font-mono flex items-center justify-center">
+                      {cartItems.filter((it) => it.customerSeat === 0).reduce((sum, it) => sum + it.quantity, 0)}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* Active Seat Indicator */}
+              <div className="text-[11px] font-bold text-amber-300 whitespace-nowrap pr-2">
+                Ordering for: <strong>{selectedSeat === 0 ? 'Table Shared' : `Customer ${selectedSeat}`}</strong>
+              </div>
+            </div>
+
+            {/* Menu Navigation & Search */}
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+                {/* Priority Categories Ribbon (Briyani, Rice, Noodles, Parotta First) */}
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar py-1 w-full sm:w-auto">
+                  <button
+                    type="button"
+                    onClick={() => setActiveCategory('ALL')}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition cursor-pointer ${
+                      activeCategory === 'ALL'
+                        ? 'bg-amber-500 text-stone-950 font-black'
+                        : 'bg-stone-900 text-stone-400 hover:text-white border border-white/10'
+                    }`}
+                  >
+                    🌟 All Dishes
+                  </button>
+
+                  {categories.map((cat) => {
+                    const icon = CATEGORY_ICONS[cat.toLowerCase()] || '🍽️';
+                    const isSelected = activeCategory.toLowerCase() === cat.toLowerCase();
+                    return (
+                      <button
+                        type="button"
+                        key={cat}
+                        onClick={() => setActiveCategory(cat)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 cursor-pointer ${
+                          isSelected
+                            ? 'bg-amber-500 text-stone-950 font-black'
+                            : 'bg-stone-900 text-stone-400 hover:text-white border border-white/10'
+                        }`}
+                      >
+                        <span>{icon}</span>
+                        <span>{cat}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Search Input */}
+                <div className="relative w-full sm:w-64">
+                  <Search className="w-4 h-4 text-stone-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search dishes..."
+                    className="w-full text-xs bg-stone-900 pl-9 pr-3 py-2 rounded-xl border border-white/10 text-white placeholder-stone-500 outline-none focus:border-amber-400"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-3 top-2 text-xs text-stone-400 hover:text-white"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Dishes Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                {filteredDishes.map((dish) => {
+                  const qtyInActiveSeat = getItemQuantityForSeat(dish.id, selectedSeat);
+
+                  return (
+                    <div
+                      key={dish.id}
+                      className="bg-[#171411] rounded-2xl border border-white/10 p-3 flex flex-col justify-between hover:border-amber-400/40 transition shadow-sm"
+                    >
+                      <div>
+                        <div className="flex items-center justify-between text-[11px] mb-1">
+                          <span className="text-stone-400 font-semibold">{dish.category}</span>
+                          <span className={`w-2.5 h-2.5 rounded-full ${dish.is_veg ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                        </div>
+                        <h4 className="font-bold text-sm text-white line-clamp-1" title={dish.name}>
+                          {dish.name}
+                        </h4>
+                        <p className="text-amber-400 font-black text-sm font-mono mt-1">
+                          ₹{Number(dish.price).toFixed(0)}
+                        </p>
+                      </div>
+
+                      {/* Rapid Seat Add/Remove */}
+                      <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-between">
+                        {qtyInActiveSeat > 0 ? (
+                          <div className="flex items-center justify-between w-full bg-stone-900 rounded-xl p-1 border border-amber-500/40 font-mono">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveItemFromSeat(dish.id, selectedSeat)}
+                              className="w-7 h-7 rounded-lg bg-stone-800 text-white hover:bg-rose-600 flex items-center justify-center font-bold text-xs cursor-pointer"
+                            >
+                              <Minus className="w-3.5 h-3.5" />
+                            </button>
+                            <span className="font-black text-amber-300 text-xs px-2">
+                              {qtyInActiveSeat}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleAddItemToSeat(dish, selectedSeat)}
+                              className="w-7 h-7 rounded-lg bg-amber-500 text-stone-950 hover:bg-amber-400 flex items-center justify-center font-bold text-xs cursor-pointer"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleAddItemToSeat(dish, selectedSeat)}
+                            className="w-full py-1.5 bg-stone-900 hover:bg-amber-500 text-stone-300 hover:text-stone-950 font-bold text-xs rounded-xl border border-white/10 transition flex items-center justify-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Add</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Sticky Bottom Order Bar & Seat Cart */}
+            {cartItems.length > 0 && (
+              <div className="sticky bottom-4 z-40 bg-[#1A1612]/95 backdrop-blur-md rounded-3xl border border-amber-500/40 p-4 shadow-[0_8px_30px_rgba(0,0,0,0.8)] space-y-3">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  
+                  {/* Seat Breakdown Chips */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-bold text-stone-400 uppercase tracking-wider mr-1">
+                      Tab Cart ({cartTotals.totalCount} items):
+                    </span>
+                    {cartTotals.seats.map((s) => (
+                      <div
+                        key={s.seat}
+                        className="px-3 py-1 rounded-xl bg-stone-900 border border-white/10 text-xs font-bold flex items-center gap-1.5"
+                      >
+                        <span className="text-amber-400">{s.label}:</span>
+                        <span className="text-white font-mono">{s.items.reduce((acc, it) => acc + it.quantity, 0)} items</span>
+                        <span className="text-stone-500">&bull;</span>
+                        <span className="text-emerald-400 font-mono">₹{s.subtotal}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Total & Action Button */}
+                  <div className="flex items-center justify-between md:justify-end gap-4 w-full md:w-auto">
+                    <div>
+                      <span className="text-[10px] text-stone-400 uppercase tracking-wider block font-bold">New Additions Total</span>
+                      <span className="text-2xl font-black text-amber-400 font-mono">₹{cartTotals.subtotal.toFixed(2)}</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isSubmittingOrder}
+                      onClick={handleDispatchOrder}
+                      className="px-6 py-3 bg-gradient-to-r from-amber-500 to-amber-400 hover:brightness-110 active:scale-98 text-stone-950 font-black text-sm uppercase tracking-wider rounded-2xl shadow-[0_4px_20px_rgba(245,158,11,0.4)] flex items-center gap-2 cursor-pointer transition disabled:opacity-50"
+                    >
+                      <Send className="w-4 h-4" />
+                      <span>{isSubmittingOrder ? 'Sending...' : 'Send to Kitchen & Billing'}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ============================================================== */}
+        {/* TAB 3: BILLING COUNTER & PRINT STATION (Stage 8) */}
+        {/* ============================================================== */}
+        {activeTab === 'BILLING' && (
+          <div className="space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-stone-900/60 p-4 rounded-3xl border border-white/10">
+              <div>
+                <h2 className="text-lg font-serif font-black text-white flex items-center gap-2">
+                  <span>Cashier Billing &amp; Thermal Printing Station</span>
+                  <span className="text-xs px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-sans font-bold">
+                    {tablesData.occupiedCount} Active Tabs
+                  </span>
+                </h2>
+                <p className="text-xs text-stone-400">
+                  Review open dining tables, trigger instant 80mm/58mm thermal receipts, and settle payments.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={loadTableStatus}
+                className="px-3.5 py-2 bg-stone-800 hover:bg-stone-700 rounded-xl text-xs font-bold text-stone-300 transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>Refresh Station</span>
+              </button>
+            </div>
+
+            {/* Active Billing Cards */}
+            {tablesData.occupiedCount === 0 ? (
+              <div className="py-20 text-center bg-stone-900/40 rounded-3xl border border-white/10 p-8">
+                <CheckCircle2 className="w-12 h-12 text-emerald-400 mx-auto mb-3" />
+                <h3 className="font-bold text-white text-base">All Tables Cleared</h3>
+                <p className="text-xs text-stone-400 mt-1 max-w-sm mx-auto">
+                  There are currently no active dining orders awaiting billing. New orders from waiters will appear here automatically.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {tablesData.tables.filter((t) => t.status !== 'VACANT').map((t) => (
+                  <div
+                    key={t.tableId}
+                    className="bg-[#171411] rounded-3xl border border-blue-500/30 p-5 shadow-lg flex flex-col justify-between space-y-4"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-blue-300 bg-blue-500/20 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                          Ready for Bill
+                        </span>
+                        <h3 className="text-xl font-serif font-black text-white mt-1">
+                          {t.tableLabel}
+                        </h3>
+                      </div>
+                      <div className="text-right font-mono">
+                        <span className="text-2xl font-black text-emerald-400">₹{t.activeOrder?.total.toFixed(2)}</span>
+                        <span className="text-[10px] text-stone-400 block font-sans">0% GST &bull; Exact Menu</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-stone-900/80 p-3 rounded-2xl border border-white/5 space-y-1 text-xs">
+                      <div className="flex justify-between text-stone-400">
+                        <span>Server in Charge:</span>
+                        <span className="text-white font-bold">{t.activeOrder?.serverName}</span>
+                      </div>
+                      <div className="flex justify-between text-stone-400">
+                        <span>Items Ordered:</span>
+                        <span className="text-white font-bold">{t.activeOrder?.itemCount} dishes</span>
+                      </div>
+                      <div className="flex justify-between text-stone-400">
+                        <span>Dining Time:</span>
+                        <span className="text-blue-300 font-bold">{t.activeOrder?.elapsedMinutes} mins ago</span>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenSettleModal(t)}
+                        className="py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>Print Bill</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenSettleModal(t)}
+                        className="py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Settle Tab</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ============================================================== */}
+        {/* TAB 4: BILLS ARCHIVE & ORDER HISTORY (Stage 9) */}
+        {/* ============================================================== */}
+        {activeTab === 'HISTORY' && (
+          <div className="space-y-6">
+            
+            {/* Header & Controls */}
+            <div className="bg-[#171411] p-5 rounded-3xl border border-white/10 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-serif font-black text-white flex items-center gap-2">
+                    <span>Searchable Bills &amp; Order History Archive</span>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-sans font-bold">
+                      {billsArchive.length} Archived Bills
+                    </span>
+                  </h2>
+                  <p className="text-xs text-stone-400">
+                    Search previous customer bills, view customer 1-4 seat receipts, reprint thermal slips, or export CSV.
+                  </p>
+                </div>
+
+                <a
+                  href={`https://cafaqr-api.p7404467.workers.dev/api/pos/bills-export/csv?restaurantId=${RESTAURANT_ID}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-4 py-2 bg-stone-800 hover:bg-stone-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition w-fit cursor-pointer border border-white/10"
+                >
+                  <Download className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Export History CSV</span>
+                </a>
+              </div>
+
+              {/* Filters Toolbar */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-white/5">
+                
+                {/* Search Input */}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-stone-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={billsSearch}
+                    onChange={(e) => setBillsSearch(e.target.value)}
+                    placeholder="Search by Bill # or Server..."
+                    className="w-full text-xs bg-stone-900 pl-9 pr-3 py-2 rounded-xl border border-white/10 text-white placeholder-stone-500 outline-none focus:border-amber-400"
+                  />
+                </div>
+
+                {/* Date Filter */}
+                <div className="flex items-center gap-1.5 text-xs font-bold">
+                  {['today', 'yesterday', 'all'].map((df) => (
+                    <button
+                      key={df}
+                      type="button"
+                      onClick={() => setBillsDateFilter(df)}
+                      className={`px-3 py-2 rounded-xl capitalize transition cursor-pointer flex-1 ${
+                        billsDateFilter === df
+                          ? 'bg-amber-500 text-stone-950 font-black'
+                          : 'bg-stone-900 text-stone-400 hover:text-white border border-white/10'
+                      }`}
+                    >
+                      {df === 'all' ? 'All Time' : df}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Table Filter */}
+                <div>
+                  <select
+                    value={billsTableFilter}
+                    onChange={(e) => setBillsTableFilter(e.target.value)}
+                    className="w-full text-xs bg-stone-900 px-3 py-2 rounded-xl border border-white/10 text-white outline-none focus:border-amber-400"
+                  >
+                    <option value="">All Service Tables</option>
+                    <option value="0">Takeaway Parcel (0)</option>
+                    {[...Array(15)].map((_, i) => (
+                      <option key={i + 1} value={i + 1}>Table #{i + 1}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Bills List Table */}
+            {isLoadingBills ? (
+              <div className="py-20 text-center text-stone-400">
+                <RefreshCw className="w-8 h-8 animate-spin mx-auto text-amber-400 mb-2" />
+                <p className="text-xs">Loading archived bills...</p>
+              </div>
+            ) : billsArchive.length === 0 ? (
+              <div className="py-20 text-center bg-stone-900/40 rounded-3xl border border-white/10 p-8">
+                <FileText className="w-12 h-12 text-stone-600 mx-auto mb-3" />
+                <h3 className="font-bold text-white text-base">No Archived Bills Found</h3>
+                <p className="text-xs text-stone-400 mt-1 max-w-sm mx-auto">
+                  No completed bills match your selected filters. Completed orders will be stored here permanently.
+                </p>
+              </div>
+            ) : (
+              <div className="bg-[#171411] rounded-3xl border border-white/10 overflow-hidden shadow-xl">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs text-stone-300">
+                    <thead className="bg-stone-900/90 text-stone-400 uppercase tracking-wider text-[10px] font-bold border-b border-white/10">
+                      <tr>
+                        <th className="px-4 py-3">Bill Number</th>
+                        <th className="px-4 py-3">Paid Date &amp; Time</th>
+                        <th className="px-4 py-3">Table</th>
+                        <th className="px-4 py-3">Server</th>
+                        <th className="px-4 py-3">Items</th>
+                        <th className="px-4 py-3">Payment</th>
+                        <th className="px-4 py-3">Total (₹)</th>
+                        <th className="px-4 py-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 font-mono">
+                      {billsArchive.map((b) => (
+                        <tr key={b.id} className="hover:bg-white/5 transition">
+                          <td className="px-4 py-3 font-bold text-amber-400">{b.billNumber}</td>
+                          <td className="px-4 py-3 font-sans text-stone-400">{new Date(b.paidAt).toLocaleString()}</td>
+                          <td className="px-4 py-3 font-sans font-bold text-white">{b.tableLabel}</td>
+                          <td className="px-4 py-3 font-sans text-stone-300">{b.serverName}</td>
+                          <td className="px-4 py-3">{b.itemCount} items</td>
+                          <td className="px-4 py-3">
+                            <span className="px-2 py-0.5 rounded-md bg-stone-800 text-[10px] font-bold text-stone-300 border border-white/10">
+                              {b.paymentMethod}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 font-black text-emerald-400 text-sm">₹{b.total.toFixed(2)}</td>
+                          <td className="px-4 py-3 text-right font-sans">
+                            <button
+                              type="button"
+                              onClick={() => setViewBillModal(b)}
+                              className="px-3 py-1 bg-stone-800 hover:bg-stone-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 ml-auto cursor-pointer"
+                            >
+                              <Printer className="w-3 h-3 text-amber-400" />
+                              <span>View / Print</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
+      {/* ============================================================== */}
+      {/* MODAL 1: SETTLE BILL & INSTANT THERMAL PRINT MODAL */}
+      {/* ============================================================== */}
+      {settleModalOrder && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-[#1A1613] rounded-3xl border border-white/20 max-w-md w-full p-6 space-y-5 shadow-2xl relative">
+            <button
+              type="button"
+              onClick={() => { setSettleModalOrder(null); setPrintedReceipt(null); }}
+              className="absolute right-4 top-4 text-stone-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {!printedReceipt ? (
+              <>
+                <div className="text-center">
+                  <Printer className="w-10 h-10 text-amber-400 mx-auto mb-2" />
+                  <h3 className="font-serif font-black text-xl text-white">
+                    Settle &amp; Print Bill
+                  </h3>
+                  <p className="text-xs text-stone-400">
+                    {settleModalOrder.tableLabel} &bull; Server: {settleModalOrder.serverName}
+                  </p>
+                </div>
+
+                {/* Items Preview */}
+                <div className="bg-stone-900/80 p-3.5 rounded-2xl border border-white/10 space-y-2 max-h-48 overflow-y-auto text-xs font-mono">
+                  {settleModalOrder.seatsBreakdown?.map((seat) => (
+                    <div key={seat.seatNumber} className="space-y-1">
+                      <div className="text-[10px] text-amber-300 font-bold font-sans uppercase tracking-wider border-b border-white/10 pb-0.5">
+                        {seat.label} (₹{seat.subtotal})
+                      </div>
+                      {seat.items.map((it, idx) => (
+                        <div key={idx} className="flex justify-between text-stone-300">
+                          <span>{it.quantity}x {it.name}</span>
+                          <span>₹{it.lineTotal}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Total */}
+                <div className="flex justify-between items-baseline font-mono pt-2 border-t border-white/10">
+                  <span className="text-xs uppercase tracking-wider text-stone-400 font-sans font-bold">Total Bill (0% GST):</span>
+                  <span className="text-3xl font-black text-emerald-400">₹{settleModalOrder.total.toFixed(2)}</span>
+                </div>
+
+                {/* Payment Method Selector */}
+                <div>
+                  <label className="text-xs font-bold text-stone-400 block mb-1.5">Payment Method</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSettlingMethod('CASH')}
+                      className={`py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        settlingMethod === 'CASH'
+                          ? 'bg-emerald-600 text-white font-black'
+                          : 'bg-stone-900 text-stone-400 border border-white/10'
+                      }`}
+                    >
+                      <Banknote className="w-4 h-4" />
+                      <span>CASH</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setSettlingMethod('UPI')}
+                      className={`py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        settlingMethod === 'UPI'
+                          ? 'bg-emerald-600 text-white font-black'
+                          : 'bg-stone-900 text-stone-400 border border-white/10'
+                      }`}
+                    >
+                      <Smartphone className="w-4 h-4" />
+                      <span>UPI (QR)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Confirm Button */}
+                <button
+                  type="button"
+                  disabled={isSettling}
+                  onClick={handleConfirmSettle}
+                  className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-400 hover:brightness-110 active:scale-98 text-stone-950 font-black text-sm uppercase tracking-wider rounded-2xl shadow-lg flex items-center justify-center gap-2 cursor-pointer transition disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{isSettling ? 'Settling & Archiving...' : `Settle & Print Bill (₹${settleModalOrder.total.toFixed(2)})`}</span>
+                </button>
+              </>
+            ) : (
+              /* Receipt Settle Success & Printable Slip */
+              <div className="space-y-4">
+                <div className="text-center">
+                  <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto mb-1.5" />
+                  <h3 className="font-serif font-black text-xl text-white">
+                    Bill Settle &amp; Archived!
+                  </h3>
+                  <p className="text-xs text-amber-400 font-mono font-bold">
+                    Bill No: {printedReceipt.billNumber}
+                  </p>
+                </div>
+
+                {/* Printable Slip Container */}
+                <div id="printable-thermal-receipt" className="bg-white text-black p-4 rounded-xl font-mono text-[11px] leading-tight space-y-2 border border-stone-300 max-h-72 overflow-y-auto">
+                  <div className="text-center border-b border-black pb-2">
+                    <p className="font-bold text-xs">KRISH CAFE AND RESTAURANT</p>
+                    <p className="text-[10px]">Rathinam College Front Gate, Eachanari</p>
+                    <p className="text-[10px]">Ph: 8760633322</p>
+                  </div>
+
+                  <div className="flex justify-between text-[10px] border-b border-dashed border-black pb-1">
+                    <span>{printedReceipt.billNumber}</span>
+                    <span>{printedReceipt.tableLabel}</span>
+                  </div>
+
+                  <div className="space-y-1">
+                    {printedReceipt.items?.map((it, idx) => (
+                      <div key={idx} className="flex justify-between">
+                        <span>{it.quantity}x {it.name} ({it.seatLabel})</span>
+                        <span>₹{it.amount}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="border-t border-black pt-1 space-y-0.5 text-right font-bold">
+                    <div className="flex justify-between">
+                      <span>SUBTOTAL:</span>
+                      <span>₹{printedReceipt.subtotal?.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>TAX (0% GST):</span>
+                      <span>₹0.00</span>
+                    </div>
+                    <div className="flex justify-between text-xs pt-1 border-t border-black">
+                      <span>TOTAL:</span>
+                      <span>₹{printedReceipt.total?.toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  <div className="text-center text-[10px] pt-1 border-t border-dashed border-black">
+                    <p>PAID VIA {printedReceipt.paymentMethod}</p>
+                    <p>THANK YOU! VISIT AGAIN!</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleTriggerBrowserPrint}
+                    className="py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Print 80mm Slip</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => { setSettleModalOrder(null); setPrintedReceipt(null); setActiveTab('TABLES'); }}
+                    className="py-2.5 bg-stone-800 hover:bg-stone-700 text-white font-bold text-xs rounded-xl cursor-pointer"
+                  >
+                    Done &bull; Next Table
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* MODAL 2: VIEW / REPRINT HISTORICAL BILL */}
+      {/* ============================================================== */}
+      {viewBillModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-[#1A1613] rounded-3xl border border-white/20 max-w-md w-full p-6 space-y-4 shadow-2xl relative">
+            <button
+              type="button"
+              onClick={() => setViewBillModal(null)}
+              className="absolute right-4 top-4 text-stone-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="text-center">
+              <Printer className="w-8 h-8 text-amber-400 mx-auto mb-1" />
+              <h3 className="font-serif font-black text-lg text-white">
+                Archived Bill Receipt
+              </h3>
+              <p className="text-xs text-amber-400 font-mono font-bold">
+                {viewBillModal.billNumber}
+              </p>
+            </div>
+
+            {/* Receipt Preview */}
+            <div className="bg-white text-black p-4 rounded-xl font-mono text-[11px] leading-tight space-y-2 border border-stone-300 max-h-72 overflow-y-auto">
+              <div className="text-center border-b border-black pb-2">
+                <p className="font-bold text-xs">KRISH CAFE AND RESTAURANT</p>
+                <p className="text-[10px]">Rathinam College Front Gate, Eachanari</p>
+                <p className="text-[10px]">Ph: 8760633322</p>
+              </div>
+
+              <div className="flex justify-between text-[10px] border-b border-dashed border-black pb-1">
+                <span>{viewBillModal.billNumber}</span>
+                <span>{viewBillModal.tableLabel}</span>
+              </div>
+              <div className="flex justify-between text-[10px]">
+                <span>DATE: {new Date(viewBillModal.paidAt).toLocaleDateString()}</span>
+                <span>SERVER: {viewBillModal.serverName}</span>
+              </div>
+
+              <div className="space-y-1 pt-1">
+                {viewBillModal.items?.map((it, idx) => (
+                  <div key={idx} className="flex justify-between">
+                    <span>{it.quantity}x {it.name} (Seat {it.seat || 1})</span>
+                    <span>₹{it.amount || (it.price * it.quantity)}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="border-t border-black pt-1 space-y-0.5 text-right font-bold">
+                <div className="flex justify-between">
+                  <span>SUBTOTAL:</span>
+                  <span>₹{viewBillModal.subtotal?.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>TAX (0% GST):</span>
+                  <span>₹0.00</span>
+                </div>
+                <div className="flex justify-between text-xs pt-1 border-t border-black">
+                  <span>TOTAL:</span>
+                  <span>₹{viewBillModal.total?.toFixed(2)}</span>
+                </div>
+              </div>
+
+              <div className="text-center text-[10px] pt-1 border-t border-dashed border-black">
+                <p>PAID VIA {viewBillModal.paymentMethod}</p>
+                <p>THANK YOU! VISIT AGAIN!</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleTriggerBrowserPrint}
+                className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Printer className="w-4 h-4" />
+                <span>Print Thermal Slip</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setViewBillModal(null)}
+                className="px-4 py-2.5 bg-stone-800 hover:bg-stone-700 text-white font-bold text-xs rounded-xl cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Print CSS for Thermal 80mm / 58mm Slips */}
+      <style>{`
+        @media print {
+          body * {
+            visibility: hidden;
+          }
+          #printable-thermal-receipt, #printable-thermal-receipt * {
+            visibility: visible;
+          }
+          #printable-thermal-receipt {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 80mm;
+            margin: 0;
+            padding: 5mm;
+            color: #000;
+            background: #fff;
+            font-size: 11px;
+            line-height: 1.2;
+          }
+        }
+      `}</style>
+    </div>
+  );
+}

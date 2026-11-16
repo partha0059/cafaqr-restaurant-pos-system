@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS orders (
     tax_amount REAL NOT NULL DEFAULT 0,
     total REAL NOT NULL DEFAULT 0,
     payment_method TEXT DEFAULT 'CASH',
+    server_name TEXT DEFAULT 'Captain',
+    guest_count INTEGER DEFAULT 1,
     coupon_code TEXT,
     discount_amount REAL NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
@@ -99,6 +101,8 @@ CREATE TABLE IF NOT EXISTS order_items (
     quantity INTEGER NOT NULL CHECK (quantity > 0),
     price_at_order REAL NOT NULL,
     status TEXT CHECK(status IN ('PENDING','PREPARING','READY','SERVED')) NOT NULL DEFAULT 'PENDING',
+    customer_seat INTEGER DEFAULT 1,
+    customer_label TEXT DEFAULT 'Customer 1',
     special_instructions TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
@@ -142,6 +146,27 @@ CREATE TABLE IF NOT EXISTS coupons (
     CONSTRAINT unique_restaurant_coupon UNIQUE (restaurant_id, code)
 );
 
+-- 11. Permanent Searchable Bills Archive
+CREATE TABLE IF NOT EXISTS bills_archive (
+    id TEXT PRIMARY KEY,
+    bill_number TEXT NOT NULL UNIQUE,
+    order_id TEXT,
+    restaurant_id TEXT REFERENCES restaurants(id) ON DELETE CASCADE,
+    table_number INTEGER NOT NULL,
+    table_label TEXT NOT NULL,
+    server_name TEXT NOT NULL DEFAULT 'Captain',
+    guest_count INTEGER NOT NULL DEFAULT 1,
+    subtotal REAL NOT NULL DEFAULT 0,
+    discount_amount REAL NOT NULL DEFAULT 0,
+    tax_amount REAL NOT NULL DEFAULT 0,
+    total REAL NOT NULL DEFAULT 0,
+    payment_method TEXT NOT NULL DEFAULT 'CASH',
+    customer_breakdown TEXT NOT NULL DEFAULT '[]',
+    items_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT DEFAULT (datetime('now')),
+    paid_at TEXT DEFAULT (datetime('now'))
+);
+
 -- High-Performance Composite Indexes
 CREATE INDEX IF NOT EXISTS idx_orders_restaurant ON orders(restaurant_id);
 CREATE INDEX IF NOT EXISTS idx_orders_table ON orders(table_id);
@@ -158,4 +183,7 @@ CREATE INDEX IF NOT EXISTS idx_menu_items_available ON menu_items(available);
 CREATE INDEX IF NOT EXISTS idx_feedback_restaurant ON order_feedback(restaurant_id);
 CREATE INDEX IF NOT EXISTS idx_service_requests_table ON service_requests(table_id);
 CREATE INDEX IF NOT EXISTS idx_coupons_restaurant ON coupons(restaurant_id);
+CREATE INDEX IF NOT EXISTS idx_bills_paid_at ON bills_archive(paid_at);
+CREATE INDEX IF NOT EXISTS idx_bills_table ON bills_archive(table_number);
+CREATE INDEX IF NOT EXISTS idx_bills_restaurant ON bills_archive(restaurant_id);
 

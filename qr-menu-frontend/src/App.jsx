@@ -4,6 +4,7 @@ import { CartProvider } from './context/CartContext';
 import ErrorBoundary from './components/ErrorBoundary';
 
 // ── Lazy-loaded pages: each becomes its own JS chunk ──
+const WaiterPosPage = lazy(() => import('./pages/WaiterPosPage'));
 const CustomerMenuPage = lazy(() => import('./pages/CustomerMenuPage'));
 const KitchenPage = lazy(() => import('./pages/KitchenPage'));
 const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage'));
@@ -34,22 +35,31 @@ export default function App() {
             <Routes>
               {IS_OWNER_MOBILE_APP ? (
                 <>
-                  <Route path="/" element={<OwnerAppPage />} />
+                  <Route path="/" element={<WaiterPosPage />} />
+                  <Route path="/pos" element={<WaiterPosPage />} />
+                  <Route path="/billing" element={<WaiterPosPage />} />
+                  <Route path="/history" element={<WaiterPosPage />} />
                   <Route path="/owner" element={<OwnerAppPage />} />
+                  <Route path="/kitchen" element={<KitchenPage />} />
+                  <Route path="/admin" element={<AdminDashboardPage />} />
                   <Route path="/bill/:code" element={<BillViewPage />} />
-                  <Route path="*" element={<OwnerAppPage />} />
+                  <Route path="*" element={<WaiterPosPage />} />
                 </>
               ) : (
                 <>
-                  <Route path="/" element={<Navigate to="/order" replace />} />
-                  <Route path="/order" element={<CustomerMenuPage />} />
+                  <Route path="/" element={<WaiterPosPage />} />
+                  <Route path="/pos" element={<WaiterPosPage />} />
+                  <Route path="/billing" element={<WaiterPosPage />} />
+                  <Route path="/history" element={<WaiterPosPage />} />
+                  <Route path="/order" element={<WaiterPosPage />} />
+                  <Route path="/customer-menu" element={<CustomerMenuPage />} />
                   <Route path="/kitchen" element={<KitchenPage />} />
                   <Route path="/admin" element={<AdminDashboardPage />} />
                   <Route path="/admin/login" element={<AdminLoginPage />} />
                   <Route path="/owner" element={<OwnerAppPage />} />
                   <Route path="/bill" element={<BillViewPage />} />
                   <Route path="/bill/:code" element={<BillViewPage />} />
-                  <Route path="*" element={<Navigate to="/order" replace />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
                 </>
               )}
             </Routes>

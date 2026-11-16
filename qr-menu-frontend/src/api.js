@@ -613,5 +613,62 @@ export const api = {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to reset passkey');
     return data;
+  },
+
+  // --- Staff Waiter POS & Billing Station Endpoints ---
+  async getPosTableStatus(restaurantId) {
+    const q = restaurantId ? `?restaurantId=${encodeURIComponent(restaurantId)}` : '';
+    const res = await fetch(`${API_BASE}/pos/tables/status${q}`);
+    if (!res.ok) throw new Error('Failed to fetch table statuses');
+    return res.json();
+  },
+
+  async createPosOrder(data) {
+    const res = await fetch(`${API_BASE}/pos/order`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'Failed to place POS order');
+    return result;
+  },
+
+  async getActivePosTableOrder(tableNumber, restaurantId) {
+    const q = restaurantId ? `?restaurantId=${encodeURIComponent(restaurantId)}` : '';
+    const res = await fetch(`${API_BASE}/pos/table/${tableNumber}/active${q}`);
+    if (!res.ok) throw new Error('Failed to fetch active table order');
+    return res.json();
+  },
+
+  async settlePosOrder(orderId, data = {}) {
+    const res = await fetch(`${API_BASE}/pos/order/${orderId}/settle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'Failed to settle bill');
+    return result;
+  },
+
+  async getArchivedBills(params = {}) {
+    const query = new URLSearchParams();
+    if (params.restaurantId) query.set('restaurantId', params.restaurantId);
+    if (params.date) query.set('date', params.date);
+    if (params.table !== undefined && params.table !== '') query.set('table', params.table);
+    if (params.search) query.set('search', params.search);
+    if (params.limit) query.set('limit', params.limit);
+    const qs = query.toString() ? `?${query.toString()}` : '';
+
+    const res = await fetch(`${API_BASE}/pos/bills${qs}`);
+    if (!res.ok) throw new Error('Failed to load archived bills');
+    return res.json();
+  },
+
+  async getArchivedBillById(id) {
+    const res = await fetch(`${API_BASE}/pos/bills/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error('Failed to load bill details');
+    return res.json();
   }
 };

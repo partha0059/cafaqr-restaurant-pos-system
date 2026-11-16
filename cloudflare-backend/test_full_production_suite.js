@@ -672,6 +672,99 @@ async function runMasterSuite() {
     return `${lines.length} rows exported (headers: ${lines[0].slice(0, 35)}...)`;
   });
 
+  // SECTION 15: Staff Waiter POS & Permanent Bills Archive
+  console.log('\n--- SECTION 15: Staff Waiter POS & Permanent Bills Archive ---');
+  await testStep('POS Tables Status (GET /pos/tables/status)', async () => {
+    const res = await fetch(`${API_BASE}/pos/tables/status?restaurantId=${restaurantId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.totalTables !== 16) throw new Error(`Expected 16 tables, got ${data.totalTables}`);
+    return `${data.totalTables} tables loaded (${data.vacantCount} vacant, ${data.occupiedCount} occupied)`;
+  });
+
+  let posOrderId = null;
+  await testStep('POS Multi-Seat Order (POST /pos/order: Seats 1-4 on Table #5)', async () => {
+    const res = await fetch(`${API_BASE}/pos/order`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        restaurantId,
+        tableNumber: 5,
+        serverName: 'Captain Test',
+        guestCount: 4,
+        notes: 'Less spicy, serve hot',
+        items: [
+          { menuItemId: sampleDishId, quantity: 1, customerSeat: 1, customerLabel: 'Customer 1' },
+          { menuItemId: sampleDishId, quantity: 1, customerSeat: 2, customerLabel: 'Customer 2' },
+          { menuItemId: sampleDishId, quantity: 1, customerSeat: 3, customerLabel: 'Customer 3' },
+          { menuItemId: sampleDishId, quantity: 1, customerSeat: 4, customerLabel: 'Customer 4' }
+        ]
+      })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.orderId || Number(data.taxAmount || 0) !== 0) throw new Error('POS order failed');
+    posOrderId = data.orderId;
+    return `Order #${data.orderId.slice(0, 8)} on Table #${data.tableNumber} | Total: ₹${data.total} (Tax: ₹${data.taxAmount})`;
+  });
+
+  await testStep('POS Active Order Breakdown (GET /pos/table/5/active)', async () => {
+    const res = await fetch(`${API_BASE}/pos/table/5/active?restaurantId=${restaurantId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.hasActiveOrder || data.seatsBreakdown.length !== 4) {
+      throw new Error(`Expected 4 seat breakdowns, got ${data.seatsBreakdown?.length}`);
+    }
+    return `Table #5 has 4 customer seats attributed, Total: ₹${data.total}`;
+  });
+
+  let archivedBillNumber = null;
+  let archivedBillId = null;
+  await testStep('POS Settle & Thermal Slip (POST /pos/order/:id/settle)', async () => {
+    const res = await fetch(`${API_BASE}/pos/order/${posOrderId}/settle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paymentMethod: 'CASH', cashierName: 'Head Cashier' })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.billNumber || !data.thermalText?.includes('KRISH CAFE AND RESTAURANT')) {
+      throw new Error('Settlement receipt generation failed');
+    }
+    archivedBillNumber = data.billNumber;
+    archivedBillId = data.billId;
+    return `Settled ${data.billNumber} via ${data.paymentMethod} (Total: ₹${data.total})`;
+  });
+
+  await testStep('POS Bills Archive Search (GET /pos/bills)', async () => {
+    const res = await fetch(`${API_BASE}/pos/bills?restaurantId=${restaurantId}&search=${encodeURIComponent(archivedBillNumber)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data.bills) || data.bills.length === 0) {
+      throw new Error('Archived bill not found in search');
+    }
+    return `Found archived bill ${data.bills[0].billNumber} (${data.bills[0].itemCount} items, ₹${data.bills[0].total})`;
+  });
+
+  await testStep('POS Bill Details by ID (GET /pos/bills/:id)', async () => {
+    const res = await fetch(`${API_BASE}/pos/bills/${archivedBillId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.billNumber !== archivedBillNumber) throw new Error('Bill ID lookup mismatch');
+    return `Verified bill details for ${data.billNumber} (Table ${data.tableLabel})`;
+  });
+
+  await testStep('POS Bills CSV Export (GET /pos/bills-export/csv)', async () => {
+    const res = await fetch(`${API_BASE}/pos/bills-export/csv?restaurantId=${restaurantId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const csv = await res.text();
+    if (!csv.includes('Bill Number') || !csv.includes(archivedBillNumber)) {
+      throw new Error('CSV export missing archived bill');
+    }
+    const lines = csv.trim().split('\n');
+    return `Exported ${lines.length} bill records to CSV`;
+  });
+
   console.log('\n========================================================================');
   console.log(`🎉 100% PRODUCTION MASTER VERIFICATION: ALL ${passedCount}/${totalCount} TESTS PASSED!`);
   console.log('   All frontend flows, APIs, D1 database tables, KDS, UPI, and admin suite');
