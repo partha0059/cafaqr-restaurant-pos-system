@@ -352,22 +352,72 @@ pos.post('/order/:id/settle', async (c) => {
     const taxAmount = 0; // 0% GST
     const total = subtotal;
 
-    // Build customer 1 to 4 seat breakdown
-    const customerBreakdown = {};
-    for (const it of items) {
-      const sKey = it.seat === 0 ? 'Shared' : `Customer ${it.seat}`;
-      if (!customerBreakdown[sKey]) {
-        customerBreakdown[sKey] = { seat: it.seat, seatLabel: sKey, items: [], subtotal: 0 };
-      }
-      customerBreakdown[sKey].items.push(it);
-      customerBreakdown[sKey].subtotal += it.amount;
-    }
-
     const istNow = formatIstDateTime();
     const shortCode = orderId.replace(/[^a-zA-Z0-9]/g, '').slice(-4).toUpperCase();
     const billNumber = `KB-${istNow.dateStr.replace(/-/g, '').slice(2)}-${shortCode}`;
     const tableLabel = Number(ord.table_number) === 0 ? 'PARCEL / TAKEAWAY' : `Table #${ord.table_number}`;
     const billArchiveId = generateUUID();
+
+    // Build customer 1 to 4 seat breakdown with dedicated sub-bills
+    const customerBreakdownMap = {};
+    for (const it of items) {
+      const sKey = it.seat === 0 ? 'Shared' : `Customer ${it.seat}`;
+      if (!customerBreakdownMap[sKey]) {
+        const indBillNo = `${billNumber}-${it.seat === 0 ? 'SHR' : 'C' + it.seat}`;
+        customerBreakdownMap[sKey] = {
+          seat: it.seat,
+          seatLabel: sKey,
+          individualBillNumber: indBillNo,
+          items: [],
+          subtotal: 0,
+          taxAmount: 0,
+          total: 0
+        };
+      }
+      customerBreakdownMap[sKey].items.push(it);
+      customerBreakdownMap[sKey].subtotal += it.amount;
+      customerBreakdownMap[sKey].total += it.amount;
+    }
+
+    // Sort customer breakdown: Customer 1, 2, 3, 4, then Table Shared (0)
+    const customerBreakdown = Object.values(customerBreakdownMap).sort((a, b) => {
+      const sA = a.seat === 0 ? 99 : a.seat;
+      const sB = b.seat === 0 ? 99 : b.seat;
+      return sA - sB;
+    });
+
+    // Generate individual 80mm thermal text receipts for each customer
+    for (const seatObj of customerBreakdown) {
+      const indLines = [
+        '================================================',
+        '          KRISH CAFE AND RESTAURANT             ',
+        '         Rathinam College Front Gate            ',
+        '            Eachanari, Coimbatore               ',
+        '               PH: 8760633322                   ',
+        '================================================',
+        `BILL NO: ${seatObj.individualBillNumber.padEnd(16)} TABLE: ${tableLabel}`,
+        `DINER:   ${seatObj.seatLabel.padEnd(16)} SERVER: ${ord.server_name || 'Captain'}`,
+        `DATE:    ${istNow.full.padEnd(16)} PAYMENT: ${paymentMethod}`,
+        '------------------------------------------------',
+        'ITEM                           QTY  PRICE AMOUNT',
+        '------------------------------------------------',
+        ...seatObj.items.map((it) => {
+          const nameCol = it.name.slice(0, 27).padEnd(28);
+          const qtyCol = String(it.quantity).padStart(3);
+          const priceCol = it.price.toFixed(0).padStart(6);
+          const amtCol = it.amount.toFixed(0).padStart(7);
+          return `${nameCol}${qtyCol}${priceCol}${amtCol}`;
+        }),
+        '------------------------------------------------',
+        `INDIVIDUAL SUBTOTAL:                   ₹${seatObj.subtotal.toFixed(2)}`,
+        `TAX (0% GST):                            ₹0.00`,
+        `TOTAL PAYABLE:                         ₹${seatObj.total.toFixed(2)}`,
+        '------------------------------------------------',
+        '           THANK YOU! VISIT AGAIN!              ',
+        '================================================'
+      ];
+      seatObj.thermalText = indLines.join('\n');
+    }
 
     // Commit to permanent bills_archive
     await c.env.DB.prepare(
@@ -388,7 +438,7 @@ pos.post('/order/:id/settle', async (c) => {
       taxAmount,
       total,
       paymentMethod,
-      JSON.stringify(Object.values(customerBreakdown)),
+      JSON.stringify(customerBreakdown),
       JSON.stringify(items),
       ord.created_at
     ).run();
@@ -398,8 +448,8 @@ pos.post('/order/:id/settle', async (c) => {
       "UPDATE orders SET status = 'PAID', payment_method = ?, updated_at = datetime('now') WHERE id = ?"
     ).bind(paymentMethod, orderId).run();
 
-    // Format 80mm thermal text receipt
-    const thermalText = [
+    // Format 80mm master thermal text receipt with clear individual customer sections
+    const thermalMasterLines = [
       '================================================',
       '          KRISH CAFE AND RESTAURANT             ',
       '         Rathinam College Front Gate            ',
@@ -409,25 +459,36 @@ pos.post('/order/:id/settle', async (c) => {
       `BILL NO: ${billNumber.padEnd(16)} TABLE: ${tableLabel}`,
       `DATE: ${istNow.full.padEnd(19)} SERVER: ${ord.server_name || 'Captain'}`,
       `PAYMENT: ${paymentMethod.padEnd(16)} CASHIER: ${cashierName}`,
-      '------------------------------------------------',
-      'ITEM                    SEAT  QTY  PRICE  AMOUNT',
-      '------------------------------------------------',
-      ...items.map((it) => {
-        const nameCol = it.name.slice(0, 22).padEnd(23);
-        const seatCol = (it.seat === 0 ? 'SHR' : `C-${it.seat}`).padEnd(5);
+      '================================================',
+      '       INDIVIDUAL CUSTOMER BILLS BREAKDOWN      ',
+      '================================================'
+    ];
+
+    for (const seatObj of customerBreakdown) {
+      thermalMasterLines.push(`>>> ${seatObj.seatLabel.toUpperCase()} BILL <<<`);
+      thermalMasterLines.push('ITEM                           QTY  PRICE AMOUNT');
+      thermalMasterLines.push('------------------------------------------------');
+      for (const it of seatObj.items) {
+        const nameCol = it.name.slice(0, 27).padEnd(28);
         const qtyCol = String(it.quantity).padStart(3);
         const priceCol = it.price.toFixed(0).padStart(6);
         const amtCol = it.amount.toFixed(0).padStart(7);
-        return `${nameCol}${seatCol}${qtyCol}${priceCol}${amtCol}`;
-      }),
-      '------------------------------------------------',
-      `SUBTOTAL:                              ₹${subtotal.toFixed(2)}`,
+        thermalMasterLines.push(`${nameCol}${qtyCol}${priceCol}${amtCol}`);
+      }
+      thermalMasterLines.push(`    >> ${seatObj.seatLabel} Subtotal: ₹${seatObj.subtotal.toFixed(2)}`);
+      thermalMasterLines.push('------------------------------------------------');
+    }
+
+    thermalMasterLines.push(
+      `TABLE SUBTOTAL:                        ₹${subtotal.toFixed(2)}`,
       `TAX (0% GST):                            ₹0.00`,
-      `TOTAL:                                 ₹${total.toFixed(2)}`,
-      '------------------------------------------------',
+      `TABLE GRAND TOTAL:                     ₹${total.toFixed(2)}`,
+      '================================================',
       '           THANK YOU! VISIT AGAIN!              ',
       '================================================'
-    ].join('\n');
+    );
+
+    const thermalText = thermalMasterLines.join('\n');
 
     return c.json({
       success: true,
@@ -443,7 +504,7 @@ pos.post('/order/:id/settle', async (c) => {
       taxAmount: 0,
       total,
       items,
-      customerBreakdown: Object.values(customerBreakdown),
+      customerBreakdown,
       paidAt: istNow.full,
       thermalText
     });

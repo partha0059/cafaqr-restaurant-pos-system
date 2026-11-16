@@ -24,7 +24,8 @@ import {
   AlertCircle,
   Sparkles,
   Send,
-  UserCheck
+  UserCheck,
+  Scissors
 } from 'lucide-react';
 import { api } from '../api';
 import KrishLogo from '../components/KrishLogo';
@@ -61,6 +62,297 @@ const getCategoryPriority = (category = '') => {
   if (norm === 'parotta' || norm === 'porotta') return 4;
   return 10;
 };
+
+// Component: Multi-Customer Individual & Master Thermal Bill Renderer
+function MultiCustomerReceiptSlip({ data, viewMode, setViewMode, isPreBill = false }) {
+  if (!data) return null;
+
+  const breakdown = useMemo(() => {
+    // 1. If customerBreakdown already formatted array
+    if (Array.isArray(data.customerBreakdown) && data.customerBreakdown.length > 0) {
+      return data.customerBreakdown.map((s) => ({
+        seat: Number(s.seat !== undefined ? s.seat : (s.seatNumber !== undefined ? s.seatNumber : 1)),
+        seatLabel: s.seatLabel || s.label || (Number(s.seat) === 0 ? 'Table Shared' : `Customer ${s.seat || 1}`),
+        individualBillNumber: s.individualBillNumber || `${data.billNumber || 'BILL'}-${s.seat === 0 ? 'SHR' : 'C' + (s.seat || 1)}`,
+        items: (s.items || []).map((it) => ({
+          name: it.name,
+          quantity: Number(it.quantity || 1),
+          price: Number(it.price || it.price_at_order || 0),
+          amount: Number(it.amount || it.lineTotal || (Number(it.price || 0) * Number(it.quantity || 1)))
+        })),
+        subtotal: Number(s.subtotal || 0),
+        total: Number(s.total || s.subtotal || 0)
+      }));
+    }
+
+    // 2. If seatsBreakdown from active order
+    if (Array.isArray(data.seatsBreakdown) && data.seatsBreakdown.length > 0) {
+      return data.seatsBreakdown.map((s) => ({
+        seat: Number(s.seatNumber),
+        seatLabel: s.label || (s.seatNumber === 0 ? 'Table Shared' : `Customer ${s.seatNumber}`),
+        individualBillNumber: `${data.orderId ? data.orderId.slice(-4).toUpperCase() : 'PRE'}-C${s.seatNumber}`,
+        items: (s.items || []).map((it) => ({
+          name: it.name,
+          quantity: Number(it.quantity || 1),
+          price: Number(it.price || 0),
+          amount: Number(it.lineTotal || (Number(it.price || 0) * Number(it.quantity || 1)))
+        })),
+        subtotal: Number(s.subtotal || 0),
+        total: Number(s.subtotal || 0)
+      }));
+    }
+
+    // 3. Derive from flat items array
+    const items = data.items || [];
+    const map = {};
+    for (const it of items) {
+      const sNum = it.seat !== undefined ? Number(it.seat) : (it.customer_seat !== undefined ? Number(it.customer_seat) : 1);
+      const sLabel = it.seatLabel || it.customer_label || (sNum === 0 ? 'Table Shared' : `Customer ${sNum}`);
+      if (!map[sNum]) {
+        map[sNum] = {
+          seat: sNum,
+          seatLabel: sLabel,
+          individualBillNumber: `${data.billNumber || 'BILL'}-${sNum === 0 ? 'SHR' : 'C' + sNum}`,
+          items: [],
+          subtotal: 0,
+          total: 0
+        };
+      }
+      const amt = Number(it.amount || it.lineTotal || (Number(it.price || it.price_at_order || 0) * Number(it.quantity || 1)));
+      map[sNum].items.push({
+        name: it.name,
+        quantity: Number(it.quantity || 1),
+        price: Number(it.price || it.price_at_order || 0),
+        amount: amt
+      });
+      map[sNum].subtotal += amt;
+      map[sNum].total += amt;
+    }
+
+    return Object.values(map).sort((a, b) => {
+      const sA = a.seat === 0 ? 99 : a.seat;
+      const sB = b.seat === 0 ? 99 : b.seat;
+      return sA - sB;
+    });
+  }, [data]);
+
+  const displayedSeats = useMemo(() => {
+    if (viewMode === 'ALL_SEPARATE') return breakdown;
+    if (typeof viewMode === 'number') {
+      const matched = breakdown.find((s) => s.seat === viewMode);
+      return matched ? [matched] : breakdown;
+    }
+    return breakdown;
+  }, [breakdown, viewMode]);
+
+  const formattedDate = data.paidAt
+    ? new Date(data.paidAt).toLocaleString()
+    : (data.createdAt ? new Date(data.createdAt).toLocaleString() : new Date().toLocaleString());
+
+  return (
+    <div className="space-y-3">
+      {/* View Mode Selector Tabs */}
+      <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-stone-900 rounded-2xl border border-white/10 text-[11px] font-bold">
+        <button
+          type="button"
+          onClick={() => setViewMode('ALL_SEPARATE')}
+          className={`px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 cursor-pointer ${
+            viewMode === 'ALL_SEPARATE'
+              ? 'bg-amber-500 text-stone-950 font-black shadow-md'
+              : 'text-stone-300 hover:text-white'
+          }`}
+        >
+          <Scissors className="w-3.5 h-3.5" />
+          <span>All Separate Slips ({breakdown.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setViewMode('COMBINED')}
+          className={`px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 cursor-pointer ${
+            viewMode === 'COMBINED'
+              ? 'bg-amber-500 text-stone-950 font-black shadow-md'
+              : 'text-stone-300 hover:text-white'
+          }`}
+        >
+          <FileText className="w-3.5 h-3.5" />
+          <span>Combined Table Bill</span>
+        </button>
+
+        <div className="h-4 w-px bg-white/20 mx-1 hidden sm:block" />
+
+        {breakdown.map((seat) => (
+          <button
+            key={seat.seat}
+            type="button"
+            onClick={() => setViewMode(seat.seat)}
+            className={`px-2.5 py-1.5 rounded-xl transition flex items-center gap-1 cursor-pointer ${
+              viewMode === seat.seat
+                ? 'bg-emerald-500 text-stone-950 font-black shadow-md'
+                : 'text-stone-400 hover:text-white'
+            }`}
+          >
+            <span>{seat.seat === 0 ? '👥' : '🧑'}</span>
+            <span>{seat.seatLabel} (₹{seat.subtotal})</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Printable Thermal Receipt */}
+      <div
+        id="printable-thermal-receipt"
+        className="bg-white text-black p-4 rounded-2xl font-mono text-[11px] leading-tight space-y-4 border border-stone-300 max-h-80 overflow-y-auto shadow-inner"
+      >
+        {viewMode === 'COMBINED' ? (
+          /* COMBINED MASTER TABLE BILL (Sectioned per Customer) */
+          <div className="space-y-2">
+            <div className="text-center border-b border-black pb-2">
+              <p className="font-bold text-xs uppercase tracking-wider">KRISH CAFE AND RESTAURANT</p>
+              <p className="text-[10px]">Rathinam College Front Gate, Eachanari, Coimbatore</p>
+              <p className="text-[10px]">Ph: 8760633322</p>
+            </div>
+
+            <div className="bg-stone-100 p-1.5 rounded text-center font-bold text-xs border border-stone-300 uppercase tracking-wide">
+              {isPreBill ? 'Pre-Bill Memo' : 'Table Master Bill'} &bull; {data.tableLabel}
+            </div>
+
+            <div className="flex justify-between text-[10px] border-b border-dashed border-black pb-1 font-bold">
+              <span>BILL: {data.billNumber || 'PENDING'}</span>
+              <span>{data.tableLabel}</span>
+            </div>
+            <div className="flex justify-between text-[10px]">
+              <span>SERVER: {data.serverName || 'Captain'}</span>
+              <span>DINERS: {breakdown.length} Guests</span>
+            </div>
+            <div className="text-[10px]">
+              <span>DATE: {formattedDate}</span>
+            </div>
+
+            {/* Customer-by-Customer Sectioned Breakdown */}
+            <div className="space-y-2.5 pt-1 border-t border-black">
+              {breakdown.map((seat) => (
+                <div key={seat.seat} className="border border-stone-300 rounded p-2 bg-stone-50/70 space-y-1">
+                  <div className="flex justify-between font-bold text-[11px] border-b border-stone-400 pb-0.5 text-black">
+                    <span className="uppercase">&gt;&gt;&gt; {seat.seatLabel} Bill</span>
+                    <span>₹{seat.subtotal.toFixed(2)}</span>
+                  </div>
+                  {seat.items.map((it, idx) => (
+                    <div key={idx} className="flex justify-between text-[10px]">
+                      <span>{it.quantity}x {it.name}</span>
+                      <span className="font-bold">₹{it.amount}</span>
+                    </div>
+                  ))}
+                  <div className="text-right text-[10px] text-stone-700 font-bold border-t border-dotted border-stone-300 pt-0.5">
+                    {seat.seatLabel} Subtotal: ₹{seat.subtotal.toFixed(2)}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Table Totals (0% GST) */}
+            <div className="border-t-2 border-black pt-1.5 space-y-0.5 text-right font-bold">
+              <div className="flex justify-between">
+                <span>TABLE SUBTOTAL:</span>
+                <span>₹{Number(data.subtotal || 0).toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between text-stone-600">
+                <span>TAX (0% GST):</span>
+                <span>₹0.00</span>
+              </div>
+              <div className="flex justify-between text-xs pt-1 border-t border-black font-black">
+                <span>TABLE GRAND TOTAL:</span>
+                <span className="text-sm">₹{Number(data.total || data.subtotal || 0).toFixed(2)}</span>
+              </div>
+            </div>
+
+            <div className="text-center text-[10px] pt-1.5 border-t border-dashed border-black">
+              <p className="font-bold">{isPreBill ? 'PLEASE PAY AT CASHIER COUNTER' : `PAID VIA ${data.paymentMethod || 'CASH'}`}</p>
+              <p>THANK YOU! VISIT AGAIN!</p>
+            </div>
+          </div>
+        ) : (
+          /* INDIVIDUAL CUSTOMER SLIPS (Separate Per Person) */
+          <div className="space-y-4">
+            {displayedSeats.map((seat, sIdx) => (
+              <div key={seat.seat} className="thermal-slip-card thermal-slip-break space-y-2">
+                <div className="text-center border-b border-black pb-2">
+                  <p className="font-bold text-xs uppercase tracking-wider">KRISH CAFE AND RESTAURANT</p>
+                  <p className="text-[10px]">Rathinam College Front Gate, Eachanari, Coimbatore</p>
+                  <p className="text-[10px]">Ph: 8760633322</p>
+                </div>
+
+                <div className="bg-stone-100 p-1.5 rounded text-center font-bold text-xs border border-stone-300 uppercase tracking-wide">
+                  ★ {seat.seatLabel} Bill Slip ★
+                </div>
+
+                <div className="flex justify-between text-[10px] border-b border-dashed border-black pb-1">
+                  <span>BILL: {seat.individualBillNumber}</span>
+                  <span className="font-bold">{data.tableLabel}</span>
+                </div>
+                <div className="flex justify-between text-[10px]">
+                  <span>SERVER: {data.serverName || 'Captain'}</span>
+                  <span className="font-bold">DINER: {seat.seatLabel}</span>
+                </div>
+                <div className="text-[10px]">
+                  <span>DATE: {formattedDate}</span>
+                </div>
+
+                {/* Items for this customer */}
+                <div className="space-y-1 pt-1 border-t border-black">
+                  <div className="flex justify-between text-[10px] font-bold border-b border-dashed border-stone-400 pb-0.5">
+                    <span>ITEM</span>
+                    <span className="flex gap-3">
+                      <span>QTY</span>
+                      <span>PRICE</span>
+                      <span>AMT</span>
+                    </span>
+                  </div>
+                  {seat.items.map((it, idx) => (
+                    <div key={idx} className="flex justify-between items-center text-[10px]">
+                      <span className="truncate pr-2">{it.name}</span>
+                      <span className="flex gap-3 font-mono">
+                        <span className="w-3 text-center">{it.quantity}</span>
+                        <span className="w-7 text-right">₹{it.price}</span>
+                        <span className="w-9 text-right font-bold">₹{it.amount}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Individual Totals (0% GST) */}
+                <div className="border-t border-black pt-1 space-y-0.5 text-right font-bold">
+                  <div className="flex justify-between">
+                    <span>{seat.seatLabel.toUpperCase()} SUBTOTAL:</span>
+                    <span>₹{seat.subtotal.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between text-stone-600">
+                    <span>TAX (0% GST):</span>
+                    <span>₹0.00</span>
+                  </div>
+                  <div className="flex justify-between text-xs pt-1 border-t border-black">
+                    <span>INDIVIDUAL PAYABLE:</span>
+                    <span className="text-sm font-black">₹{seat.subtotal.toFixed(2)}</span>
+                  </div>
+                </div>
+
+                <div className="text-center text-[10px] pt-1.5 border-t border-dashed border-black">
+                  <p className="font-bold">{isPreBill ? 'INDIVIDUAL PRE-BILL' : `PAID VIA ${data.paymentMethod || 'CASH'}`}</p>
+                  <p>THANK YOU! VISIT AGAIN!</p>
+                </div>
+
+                {sIdx < displayedSeats.length - 1 && (
+                  <div className="text-center py-2 text-[10px] font-bold text-stone-400 border-b-2 border-dashed border-stone-400 print:hidden">
+                    - - - - - - [ ✂️ CUT / TEAR HERE FOR NEXT CUSTOMER ] - - - - - -
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function WaiterPosPage() {
   const navigate = useNavigate();
@@ -100,6 +392,9 @@ export default function WaiterPosPage() {
   const [settlingMethod, setSettlingMethod] = useState('CASH');
   const [isSettling, setIsSettling] = useState(false);
   const [printedReceipt, setPrintedReceipt] = useState(null);
+  const [receiptViewMode, setReceiptViewMode] = useState('ALL_SEPARATE'); // 'ALL_SEPARATE' | 'COMBINED' | 1 | 2 | 3 | 4 | 0
+  const [showPreBillPreview, setShowPreBillPreview] = useState(false);
+  const [preBillViewMode, setPreBillViewMode] = useState('ALL_SEPARATE');
 
   // Bill History & Search Archive
   const [billsArchive, setBillsArchive] = useState([]);
@@ -108,6 +403,7 @@ export default function WaiterPosPage() {
   const [billsTableFilter, setBillsTableFilter] = useState('');
   const [isLoadingBills, setIsLoadingBills] = useState(false);
   const [viewBillModal, setViewBillModal] = useState(null);
+  const [archiveReceiptViewMode, setArchiveReceiptViewMode] = useState('ALL_SEPARATE');
 
   // Fetch Tables
   const loadTableStatus = async () => {
@@ -1176,152 +1472,176 @@ export default function WaiterPosPage() {
       </main>
 
       {/* ============================================================== */}
-      {/* MODAL 1: SETTLE BILL & INSTANT THERMAL PRINT MODAL */}
+      {/* MODAL 1: SETTLE BILL & MULTI-CUSTOMER THERMAL PRINT MODAL */}
       {/* ============================================================== */}
       {settleModalOrder && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-[#1A1613] rounded-3xl border border-white/20 max-w-md w-full p-6 space-y-5 shadow-2xl relative">
+          <div className="bg-[#1A1613] rounded-3xl border border-white/20 max-w-lg w-full p-6 space-y-5 shadow-2xl relative">
             <button
               type="button"
-              onClick={() => { setSettleModalOrder(null); setPrintedReceipt(null); }}
+              onClick={() => { setSettleModalOrder(null); setPrintedReceipt(null); setShowPreBillPreview(false); }}
               className="absolute right-4 top-4 text-stone-400 hover:text-white"
             >
               <X className="w-5 h-5" />
             </button>
 
             {!printedReceipt ? (
-              <>
-                <div className="text-center">
-                  <Printer className="w-10 h-10 text-amber-400 mx-auto mb-2" />
-                  <h3 className="font-serif font-black text-xl text-white">
-                    Settle &amp; Print Bill
-                  </h3>
-                  <p className="text-xs text-stone-400">
-                    {settleModalOrder.tableLabel} &bull; Server: {settleModalOrder.serverName}
-                  </p>
-                </div>
+              !showPreBillPreview ? (
+                <>
+                  <div className="text-center">
+                    <Printer className="w-10 h-10 text-amber-400 mx-auto mb-2" />
+                    <h3 className="font-serif font-black text-xl text-white">
+                      Table Billing &amp; Settlement
+                    </h3>
+                    <p className="text-xs text-stone-400">
+                      {settleModalOrder.tableLabel} &bull; Server: {settleModalOrder.serverName}
+                    </p>
+                  </div>
 
-                {/* Items Preview */}
-                <div className="bg-stone-900/80 p-3.5 rounded-2xl border border-white/10 space-y-2 max-h-48 overflow-y-auto text-xs font-mono">
-                  {settleModalOrder.seatsBreakdown?.map((seat) => (
-                    <div key={seat.seatNumber} className="space-y-1">
-                      <div className="text-[10px] text-amber-300 font-bold font-sans uppercase tracking-wider border-b border-white/10 pb-0.5">
-                        {seat.label} (₹{seat.subtotal})
-                      </div>
-                      {seat.items.map((it, idx) => (
-                        <div key={idx} className="flex justify-between text-stone-300">
-                          <span>{it.quantity}x {it.name}</span>
-                          <span>₹{it.lineTotal}</span>
+                  {/* Individual Customer Seat Breakdown Chips */}
+                  <div className="space-y-2">
+                    <label className="text-[11px] font-bold text-stone-400 uppercase tracking-wider block">
+                      Individual Diner Bills ({settleModalOrder.seatsBreakdown?.length || 0} Diners)
+                    </label>
+                    <div className="bg-stone-900/90 p-3.5 rounded-2xl border border-white/10 space-y-2 max-h-52 overflow-y-auto font-mono text-xs">
+                      {settleModalOrder.seatsBreakdown?.map((seat) => (
+                        <div key={seat.seatNumber} className="border border-white/5 rounded-xl p-2.5 bg-black/30 space-y-1">
+                          <div className="flex justify-between items-center text-amber-300 font-sans font-bold text-xs border-b border-white/10 pb-1">
+                            <span className="flex items-center gap-1.5">
+                              <span>{seat.seatNumber === 0 ? '👥' : '🧑'}</span>
+                              <span>{seat.label}</span>
+                            </span>
+                            <span className="font-mono text-emerald-400 font-black">₹{seat.subtotal.toFixed(2)}</span>
+                          </div>
+                          {seat.items.map((it, idx) => (
+                            <div key={idx} className="flex justify-between text-stone-300 text-[11px] pl-1">
+                              <span className="truncate pr-2">{it.quantity}x {it.name}</span>
+                              <span className="font-bold">₹{it.lineTotal}</span>
+                            </div>
+                          ))}
                         </div>
                       ))}
                     </div>
-                  ))}
-                </div>
+                  </div>
 
-                {/* Total */}
-                <div className="flex justify-between items-baseline font-mono pt-2 border-t border-white/10">
-                  <span className="text-xs uppercase tracking-wider text-stone-400 font-sans font-bold">Total Bill (0% GST):</span>
-                  <span className="text-3xl font-black text-emerald-400">₹{settleModalOrder.total.toFixed(2)}</span>
-                </div>
+                  {/* Table Grand Total */}
+                  <div className="flex justify-between items-baseline font-mono pt-2 border-t border-white/10">
+                    <span className="text-xs uppercase tracking-wider text-stone-400 font-sans font-bold">Table Grand Total (0% GST):</span>
+                    <span className="text-3xl font-black text-emerald-400">₹{settleModalOrder.total.toFixed(2)}</span>
+                  </div>
 
-                {/* Payment Method Selector */}
-                <div>
-                  <label className="text-xs font-bold text-stone-400 block mb-1.5">Payment Method</label>
+                  {/* Payment Method Selector */}
+                  <div>
+                    <label className="text-xs font-bold text-stone-400 block mb-1.5">Payment Method</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSettlingMethod('CASH')}
+                        className={`py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                          settlingMethod === 'CASH'
+                            ? 'bg-emerald-600 text-white font-black'
+                            : 'bg-stone-900 text-stone-400 border border-white/10'
+                        }`}
+                      >
+                        <Banknote className="w-4 h-4" />
+                        <span>CASH</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSettlingMethod('UPI')}
+                        className={`py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                          settlingMethod === 'UPI'
+                            ? 'bg-emerald-600 text-white font-black'
+                            : 'bg-stone-900 text-stone-400 border border-white/10'
+                        }`}
+                      >
+                        <Smartphone className="w-4 h-4" />
+                        <span>UPI (QR)</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Action Buttons: Print Pre-Bill vs Confirm Settle */}
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowPreBillPreview(true)}
+                      className="py-3 bg-stone-800 hover:bg-stone-700 text-white font-bold text-xs rounded-2xl flex items-center justify-center gap-1.5 border border-white/10 transition cursor-pointer"
+                    >
+                      <Printer className="w-4 h-4 text-amber-400" />
+                      <span>Print Pre-Bill Slips</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isSettling}
+                      onClick={handleConfirmSettle}
+                      className="py-3 bg-gradient-to-r from-amber-500 to-amber-400 hover:brightness-110 active:scale-98 text-stone-950 font-black text-xs uppercase tracking-wider rounded-2xl shadow-lg flex items-center justify-center gap-2 cursor-pointer transition disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>{isSettling ? 'Settling...' : `Settle & Commit (₹${settleModalOrder.total.toFixed(2)})`}</span>
+                    </button>
+                  </div>
+                </>
+              ) : (
+                /* Pre-Bill Printable View */
+                <div className="space-y-4">
+                  <div className="text-center">
+                    <Printer className="w-8 h-8 text-amber-400 mx-auto mb-1" />
+                    <h3 className="font-serif font-black text-lg text-white">
+                      Pre-Bill Slips &bull; {settleModalOrder.tableLabel}
+                    </h3>
+                    <p className="text-xs text-stone-400">
+                      Choose to print separate individual bills per customer or table combined bill
+                    </p>
+                  </div>
+
+                  <MultiCustomerReceiptSlip
+                    data={settleModalOrder}
+                    viewMode={preBillViewMode}
+                    setViewMode={setPreBillViewMode}
+                    isPreBill={true}
+                  />
+
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
-                      onClick={() => setSettlingMethod('CASH')}
-                      className={`py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                        settlingMethod === 'CASH'
-                          ? 'bg-emerald-600 text-white font-black'
-                          : 'bg-stone-900 text-stone-400 border border-white/10'
-                      }`}
+                      onClick={handleTriggerBrowserPrint}
+                      className="py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
                     >
-                      <Banknote className="w-4 h-4" />
-                      <span>CASH</span>
+                      <Printer className="w-4 h-4" />
+                      <span>Print Thermal Slip</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => setSettlingMethod('UPI')}
-                      className={`py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                        settlingMethod === 'UPI'
-                          ? 'bg-emerald-600 text-white font-black'
-                          : 'bg-stone-900 text-stone-400 border border-white/10'
-                      }`}
+                      onClick={() => setShowPreBillPreview(false)}
+                      className="py-2.5 bg-stone-800 hover:bg-stone-700 text-white font-bold text-xs rounded-xl cursor-pointer"
                     >
-                      <Smartphone className="w-4 h-4" />
-                      <span>UPI (QR)</span>
+                      Back to Payment
                     </button>
                   </div>
                 </div>
-
-                {/* Confirm Button */}
-                <button
-                  type="button"
-                  disabled={isSettling}
-                  onClick={handleConfirmSettle}
-                  className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-400 hover:brightness-110 active:scale-98 text-stone-950 font-black text-sm uppercase tracking-wider rounded-2xl shadow-lg flex items-center justify-center gap-2 cursor-pointer transition disabled:opacity-50"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>{isSettling ? 'Settling & Archiving...' : `Settle & Print Bill (₹${settleModalOrder.total.toFixed(2)})`}</span>
-                </button>
-              </>
+              )
             ) : (
-              /* Receipt Settle Success & Printable Slip */
+              /* Receipt Settle Success & Multi-Customer Printable Slips */
               <div className="space-y-4">
                 <div className="text-center">
                   <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto mb-1.5" />
                   <h3 className="font-serif font-black text-xl text-white">
-                    Bill Settle &amp; Archived!
+                    Bill Settled &amp; Archived!
                   </h3>
                   <p className="text-xs text-amber-400 font-mono font-bold">
-                    Bill No: {printedReceipt.billNumber}
+                    Master Bill: {printedReceipt.billNumber}
                   </p>
                 </div>
 
-                {/* Printable Slip Container */}
-                <div id="printable-thermal-receipt" className="bg-white text-black p-4 rounded-xl font-mono text-[11px] leading-tight space-y-2 border border-stone-300 max-h-72 overflow-y-auto">
-                  <div className="text-center border-b border-black pb-2">
-                    <p className="font-bold text-xs">KRISH CAFE AND RESTAURANT</p>
-                    <p className="text-[10px]">Rathinam College Front Gate, Eachanari</p>
-                    <p className="text-[10px]">Ph: 8760633322</p>
-                  </div>
-
-                  <div className="flex justify-between text-[10px] border-b border-dashed border-black pb-1">
-                    <span>{printedReceipt.billNumber}</span>
-                    <span>{printedReceipt.tableLabel}</span>
-                  </div>
-
-                  <div className="space-y-1">
-                    {printedReceipt.items?.map((it, idx) => (
-                      <div key={idx} className="flex justify-between">
-                        <span>{it.quantity}x {it.name} ({it.seatLabel})</span>
-                        <span>₹{it.amount}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="border-t border-black pt-1 space-y-0.5 text-right font-bold">
-                    <div className="flex justify-between">
-                      <span>SUBTOTAL:</span>
-                      <span>₹{printedReceipt.subtotal?.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>TAX (0% GST):</span>
-                      <span>₹0.00</span>
-                    </div>
-                    <div className="flex justify-between text-xs pt-1 border-t border-black">
-                      <span>TOTAL:</span>
-                      <span>₹{printedReceipt.total?.toFixed(2)}</span>
-                    </div>
-                  </div>
-
-                  <div className="text-center text-[10px] pt-1 border-t border-dashed border-black">
-                    <p>PAID VIA {printedReceipt.paymentMethod}</p>
-                    <p>THANK YOU! VISIT AGAIN!</p>
-                  </div>
-                </div>
+                <MultiCustomerReceiptSlip
+                  data={printedReceipt}
+                  viewMode={receiptViewMode}
+                  setViewMode={setReceiptViewMode}
+                />
 
                 <div className="grid grid-cols-2 gap-2">
                   <button
@@ -1330,12 +1650,12 @@ export default function WaiterPosPage() {
                     className="py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <Printer className="w-4 h-4" />
-                    <span>Print 80mm Slip</span>
+                    <span>Print Thermal Slip</span>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => { setSettleModalOrder(null); setPrintedReceipt(null); setActiveTab('TABLES'); }}
+                    onClick={() => { setSettleModalOrder(null); setPrintedReceipt(null); setShowPreBillPreview(false); setActiveTab('TABLES'); }}
                     className="py-2.5 bg-stone-800 hover:bg-stone-700 text-white font-bold text-xs rounded-xl cursor-pointer"
                   >
                     Done &bull; Next Table
@@ -1352,7 +1672,7 @@ export default function WaiterPosPage() {
       {/* ============================================================== */}
       {viewBillModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-[#1A1613] rounded-3xl border border-white/20 max-w-md w-full p-6 space-y-4 shadow-2xl relative">
+          <div className="bg-[#1A1613] rounded-3xl border border-white/20 max-w-lg w-full p-6 space-y-4 shadow-2xl relative">
             <button
               type="button"
               onClick={() => setViewBillModal(null)}
@@ -1367,56 +1687,15 @@ export default function WaiterPosPage() {
                 Archived Bill Receipt
               </h3>
               <p className="text-xs text-amber-400 font-mono font-bold">
-                {viewBillModal.billNumber}
+                Master Bill: {viewBillModal.billNumber}
               </p>
             </div>
 
-            {/* Receipt Preview */}
-            <div className="bg-white text-black p-4 rounded-xl font-mono text-[11px] leading-tight space-y-2 border border-stone-300 max-h-72 overflow-y-auto">
-              <div className="text-center border-b border-black pb-2">
-                <p className="font-bold text-xs">KRISH CAFE AND RESTAURANT</p>
-                <p className="text-[10px]">Rathinam College Front Gate, Eachanari</p>
-                <p className="text-[10px]">Ph: 8760633322</p>
-              </div>
-
-              <div className="flex justify-between text-[10px] border-b border-dashed border-black pb-1">
-                <span>{viewBillModal.billNumber}</span>
-                <span>{viewBillModal.tableLabel}</span>
-              </div>
-              <div className="flex justify-between text-[10px]">
-                <span>DATE: {new Date(viewBillModal.paidAt).toLocaleDateString()}</span>
-                <span>SERVER: {viewBillModal.serverName}</span>
-              </div>
-
-              <div className="space-y-1 pt-1">
-                {viewBillModal.items?.map((it, idx) => (
-                  <div key={idx} className="flex justify-between">
-                    <span>{it.quantity}x {it.name} (Seat {it.seat || 1})</span>
-                    <span>₹{it.amount || (it.price * it.quantity)}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="border-t border-black pt-1 space-y-0.5 text-right font-bold">
-                <div className="flex justify-between">
-                  <span>SUBTOTAL:</span>
-                  <span>₹{viewBillModal.subtotal?.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>TAX (0% GST):</span>
-                  <span>₹0.00</span>
-                </div>
-                <div className="flex justify-between text-xs pt-1 border-t border-black">
-                  <span>TOTAL:</span>
-                  <span>₹{viewBillModal.total?.toFixed(2)}</span>
-                </div>
-              </div>
-
-              <div className="text-center text-[10px] pt-1 border-t border-dashed border-black">
-                <p>PAID VIA {viewBillModal.paymentMethod}</p>
-                <p>THANK YOU! VISIT AGAIN!</p>
-              </div>
-            </div>
+            <MultiCustomerReceiptSlip
+              data={viewBillModal}
+              viewMode={archiveReceiptViewMode}
+              setViewMode={setArchiveReceiptViewMode}
+            />
 
             <div className="flex gap-2">
               <button
@@ -1444,22 +1723,29 @@ export default function WaiterPosPage() {
       <style>{`
         @media print {
           body * {
-            visibility: hidden;
+            visibility: hidden !important;
           }
           #printable-thermal-receipt, #printable-thermal-receipt * {
-            visibility: visible;
+            visibility: visible !important;
           }
           #printable-thermal-receipt {
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 80mm;
-            margin: 0;
-            padding: 5mm;
-            color: #000;
-            background: #fff;
-            font-size: 11px;
-            line-height: 1.2;
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 80mm !important;
+            margin: 0 !important;
+            padding: 3mm !important;
+            color: #000 !important;
+            background: #fff !important;
+            font-size: 11px !important;
+            line-height: 1.25 !important;
+          }
+          .thermal-slip-break {
+            page-break-after: always !important;
+            break-after: page !important;
+            margin-bottom: 8mm !important;
+            padding-bottom: 4mm !important;
+            border-bottom: 2px dashed #000 !important;
           }
         }
       `}</style>
